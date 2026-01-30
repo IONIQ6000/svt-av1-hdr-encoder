@@ -1,7 +1,25 @@
 package config
 
+// Profile represents a named encoding profile
+type Profile string
+
+const (
+	ProfileDefault  Profile = "default"  // Balanced quality/size (CRF 35)
+	ProfileQuality  Profile = "quality"  // High quality, larger files (CRF 30)
+	ProfilePodcast  Profile = "podcast"  // Optimized for talking heads (CRF 40)
+	ProfileCompress Profile = "compress" // Maximum compression (CRF 45)
+	ProfileFilm     Profile = "film"     // For movies/cinema (CRF 32, film grain)
+)
+
+// AvailableProfiles returns all available profile names
+func AvailableProfiles() []Profile {
+	return []Profile{ProfileDefault, ProfileQuality, ProfilePodcast, ProfileCompress, ProfileFilm}
+}
+
 // Config holds the encoder configuration settings
 type Config struct {
+	// Profile name for display purposes
+	ProfileName Profile
 	// CRF is the Constant Rate Factor (0-63, lower = better quality)
 	// SVT-AV1-HDR default recommendation: start with 35
 	CRF int
@@ -45,35 +63,81 @@ type Config struct {
 	MinBitrate int
 }
 
-// DefaultConfig returns the SVT-AV1-HDR standard defaults
+// DefaultConfig returns the SVT-AV1-HDR standard defaults (balanced profile)
 func DefaultConfig() Config {
-	return Config{
-		// SVT-AV1-HDR recommends starting with CRF 35 for general content
-		CRF: 35,
-		// Preset 4 is a good balance of speed and quality
-		Preset: 4,
-		// Tune 1 (PSNR) is the default
-		Tune: 1,
-		// Variance boost is enabled by default in SVT-AV1-HDR
+	return GetProfile(ProfileDefault)
+}
+
+// GetProfile returns the configuration for a specific profile
+func GetProfile(profile Profile) Config {
+	// Base config with common settings
+	base := Config{
+		ProfileName:           profile,
+		Tune:                  1, // PSNR
 		VarianceBoost:         true,
 		VarianceBoostStrength: 2,
-		// Sharpness 1 is default to prioritize encoder sharpness
-		Sharpness: 1,
-		// TF strength 1 for lower temporal filtering (less blur)
-		TFStrength: 1,
-		// KF TF strength 1 to remove keyframe artifacts
-		KFTFStrength: 1,
-		// AC bias 1.0 is default
-		ACBias: 1.0,
-		// Sharp TX enabled by default
-		SharpTX: true,
-		// Film grain denoising disabled by default (harms visual fidelity)
-		FilmGrain: 0,
-		// Size check disabled by default
-		MaxSizePercent: 0,
-		// Stream removal lists
-		RemoveLanguages:   []string{},
-		RemoveImageCodecs: []string{"mjpeg", "png"},
-		MinBitrate:        0,
+		Sharpness:             1,
+		TFStrength:            1,
+		KFTFStrength:          1,
+		ACBias:                1.0,
+		SharpTX:               true,
+		FilmGrain:             0,
+		MaxSizePercent:        0,
+		RemoveLanguages:       []string{},
+		RemoveImageCodecs:     []string{"mjpeg", "png"},
+		MinBitrate:            0,
+	}
+
+	switch profile {
+	case ProfileQuality:
+		// High quality - for important content you want to preserve well
+		base.CRF = 30
+		base.Preset = 3 // Slower for better quality
+		base.VarianceBoostStrength = 3
+
+	case ProfilePodcast:
+		// Optimized for talking heads, podcasts, interviews, lectures
+		// These have low motion and don't need high bitrate
+		base.CRF = 40
+		base.Preset = 5 // Faster since content is simple
+		base.VarianceBoostStrength = 1
+
+	case ProfileCompress:
+		// Maximum compression - for archiving or storage constrained situations
+		base.CRF = 45
+		base.Preset = 6
+		base.VarianceBoostStrength = 1
+		base.Sharpness = 0
+
+	case ProfileFilm:
+		// For movies and cinematic content
+		base.CRF = 32
+		base.Preset = 2  // Slower for quality
+		base.Tune = 0    // VQ tuning for visual quality
+		base.FilmGrain = 8 // Preserve film grain
+		base.VarianceBoostStrength = 3
+
+	default: // ProfileDefault
+		// Balanced quality/size - good for general content
+		base.CRF = 35
+		base.Preset = 4
+	}
+
+	return base
+}
+
+// ProfileDescription returns a human-readable description of a profile
+func ProfileDescription(profile Profile) string {
+	switch profile {
+	case ProfileQuality:
+		return "High quality (CRF 30) - For important content, larger files"
+	case ProfilePodcast:
+		return "Podcast/Talking heads (CRF 40) - Optimized compression for low-motion content"
+	case ProfileCompress:
+		return "Maximum compression (CRF 45) - Smallest files, some quality loss"
+	case ProfileFilm:
+		return "Film/Cinema (CRF 32) - Preserves film grain, high quality"
+	default:
+		return "Default balanced (CRF 35) - Good quality/size balance for general content"
 	}
 }

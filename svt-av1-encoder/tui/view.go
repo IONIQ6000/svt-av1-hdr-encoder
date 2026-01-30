@@ -152,6 +152,11 @@ func formatPercentage(pct float64, totalFrames int64, totalDuration time.Duratio
 	if pct > 100 {
 		pct = 100
 	}
+	// Cap display at 99.9% to avoid showing 100% until truly complete
+	// (the done state will show completion)
+	if pct > 99.9 {
+		pct = 99.9
+	}
 	return fmt.Sprintf("%.1f%%", pct)
 }
 
@@ -218,10 +223,13 @@ func (m Model) renderEncodingView() string {
 
 	prog := m.CurrentProgress
 
+	// Check if we have any progress data yet
+	hasProgressData := prog.Frame > 0 || prog.OutTimeUs > 0
+
 	// Progress section
 	b.WriteString("\n")
 
-	// Progress bar
+	// Progress bar - clamp to valid range
 	percentage := prog.Percentage / 100
 	if percentage > 1 {
 		percentage = 1
@@ -229,10 +237,22 @@ func (m Model) renderEncodingView() string {
 	if percentage < 0 {
 		percentage = 0
 	}
+
+	// Show a minimal progress if encoding has started but percentage is still 0
+	if !hasProgressData && percentage == 0 {
+		// Show indeterminate state
+		percentage = 0.01 // Just a tiny bit to show something is happening
+	}
+
 	progressBar := m.Progress.ViewAs(percentage)
 
 	// Percentage with color based on progress
-	pctStr := formatPercentage(prog.Percentage, prog.TotalFrames, prog.TotalDuration)
+	var pctStr string
+	if !hasProgressData {
+		pctStr = "..."
+	} else {
+		pctStr = formatPercentage(prog.Percentage, prog.TotalFrames, prog.TotalDuration)
+	}
 	pctStyled := getPercentageStyle(prog.Percentage).Render(pctStr)
 
 	b.WriteString("  " + progressBar + "  " + pctStyled + "\n")
@@ -264,12 +284,34 @@ func (m Model) buildStatsGrid(prog encoder.Progress, elapsed time.Duration) stri
 	var lines []string
 
 	// Row 1: Frame progress and FPS
-	frameVal := fmt.Sprintf("%d", prog.Frame)
-	frameTotal := fmt.Sprintf("/ %d", prog.TotalFrames)
-	if prog.FrameEstimated && prog.TotalFrames > 0 {
-		frameTotal += " ~" // Indicate estimate with tilde
+	var frameVal, frameTotal, fpsVal string
+
+	// Handle frame display
+	if prog.Frame > 0 {
+		frameVal = fmt.Sprintf("%d", prog.Frame)
+	} else {
+		frameVal = "—"
 	}
-	fpsVal := fmt.Sprintf("%.1f", prog.FPS)
+
+	// Handle total frames display
+	if prog.TotalFrames > 0 {
+		frameTotal = fmt.Sprintf("/ %d", prog.TotalFrames)
+		if prog.FrameEstimated {
+			frameTotal += " ~" // Indicate estimate with tilde
+		}
+	} else {
+		frameTotal = "/ —"
+	}
+
+	// Handle FPS display - show placeholder until we have a valid reading
+	if prog.FPS > 0 {
+		fpsVal = fmt.Sprintf("%.1f", prog.FPS)
+	} else if prog.LastValidFPS > 0 {
+		// Use last valid FPS if current is 0 (temporary dip)
+		fpsVal = fmt.Sprintf("%.1f", prog.LastValidFPS)
+	} else {
+		fpsVal = "—"
+	}
 
 	line1 := lipgloss.JoinHorizontal(lipgloss.Top,
 		statLabelStyle.Render("Frame"),

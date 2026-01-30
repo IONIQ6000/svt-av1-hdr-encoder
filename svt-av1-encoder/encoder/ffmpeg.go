@@ -81,7 +81,8 @@ func parseSpeed(line string) (float64, string, bool) {
 // Returns (normalized string, raw string, ok bool)
 func parseBitrate(line string) (string, string, bool) {
 	// Match various bitrate formats: 1234kbits/s, 1.2Mbits/s, N/A, or plain bits/s
-	bitrateRe := regexp.MustCompile(`bitrate=\s*([\d.]+\s*[kMG]?bits/s|N/A)\s*$`)
+	// Also handle edge cases like whitespace variations
+	bitrateRe := regexp.MustCompile(`bitrate=\s*([\d.]+\s*[kKmMgG]?bits?/s|N/A)\s*$`)
 	m := bitrateRe.FindStringSubmatch(line)
 	if len(m) < 2 {
 		return "", "", false
@@ -267,13 +268,26 @@ func (e *Encoder) estimateFramesFromDuration() error {
 		return nil
 	}
 
+	// Sanity check: duration should be reasonable (less than 24 hours)
+	if duration > 86400 {
+		// Very long video - proceed with caution, don't estimate frames
+		e.mu.Lock()
+		e.Progress.TotalDuration = time.Duration(duration * float64(time.Second))
+		e.mu.Unlock()
+		return nil
+	}
+
 	e.mu.Lock()
 	e.Progress.TotalDuration = time.Duration(duration * float64(time.Second))
 
-	// Only estimate frames if we have source FPS
-	if e.Progress.SourceFPS > 0 {
-		e.Progress.TotalFrames = int64(duration * e.Progress.SourceFPS)
-		e.Progress.FrameEstimated = true
+	// Only estimate frames if we have source FPS and it's reasonable
+	if e.Progress.SourceFPS > 0 && e.Progress.SourceFPS < 1000 {
+		estimatedFrames := int64(duration * e.Progress.SourceFPS)
+		// Sanity check: estimated frames should be positive and reasonable
+		if estimatedFrames > 0 && estimatedFrames < 100000000 { // Max ~100M frames
+			e.Progress.TotalFrames = estimatedFrames
+			e.Progress.FrameEstimated = true
+		}
 	}
 	e.mu.Unlock()
 
@@ -316,6 +330,8 @@ func (e *Encoder) buildFFmpegArgs() []string {
 		"-c:v", "libsvtav1",
 		"-crf", strconv.Itoa(e.Config.CRF),
 		"-preset", strconv.Itoa(e.Config.Preset),
+		"-g", "240",         // Keyframe every 240 frames (~10 sec at 24fps, ~8 sec at 30fps)
+		"-keyint_min", "48", // Minimum keyframe interval (scene changes still insert keyframes)
 		"-pix_fmt", "yuv420p10le",
 		"-svtav1-params", svtParams,
 		"-c:a", "copy",
@@ -419,6 +435,11 @@ type progressUpdate struct {
 func (e *Encoder) parseProgress(r io.Reader) {
 	scanner := bufio.NewScanner(r)
 
+	// Increase buffer size to handle potentially long lines (1MB max)
+	// Default is 64KB which can be exceeded by some FFmpeg metadata
+	const maxScannerBuffer = 1024 * 1024
+	scanner.Buffer(make([]byte, 0, 64*1024), maxScannerBuffer)
+
 	// Current batch of updates
 	var batch progressUpdate
 
@@ -429,14 +450,14 @@ func (e *Encoder) parseProgress(r io.Reader) {
 		if strings.HasPrefix(line, "progress=") {
 			// Apply the batch
 			e.applyProgressBatch(batch)
-			
+
 			// Check if this is the final marker
 			if line == "progress=end" {
 				e.mu.Lock()
 				e.finalizeProgressLocked()
 				e.mu.Unlock()
 			}
-			
+
 			// Reset for next batch
 			batch = progressUpdate{}
 			continue
@@ -512,6 +533,11 @@ func (e *Encoder) parseProgress(r io.Reader) {
 		}
 	}
 
+	// Check for scanner errors (e.g., token too long)
+	if err := scanner.Err(); err != nil {
+		e.addLog(fmt.Sprintf("Progress reader error: %v", err))
+	}
+
 	// Apply any remaining batch
 	if batch.frameSet || batch.fpsSet || batch.sizeSet {
 		e.applyProgressBatch(batch)
@@ -526,9 +552,11 @@ func (e *Encoder) applyProgressBatch(batch progressUpdate) {
 	// Apply frame count
 	if batch.frameSet {
 		e.Progress.Frame = batch.frame
-		// Adjust total if current exceeds estimate
-		if e.Progress.FrameEstimated && batch.frame > e.Progress.TotalFrames {
+		// Always adjust total if current exceeds it - container metadata can be wrong too
+		if batch.frame > e.Progress.TotalFrames && e.Progress.TotalFrames > 0 {
 			e.Progress.TotalFrames = batch.frame
+			// Mark as estimated since we're correcting it
+			e.Progress.FrameEstimated = true
 		}
 	}
 
@@ -561,9 +589,13 @@ func (e *Encoder) applyProgressBatch(batch progressUpdate) {
 		e.Progress.SpeedRaw = batch.speedRaw
 		if batch.speedRaw == "N/A" {
 			e.Progress.Speed = "N/A"
+			// Don't clear LastValidSpeed - keep using previous valid value for ETA
 		} else if batch.speed > 0 {
 			e.Progress.Speed = batch.speedRaw
 			e.Progress.LastValidSpeed = batch.speed
+		} else {
+			// Speed is 0 or unparseable but not N/A - show raw value
+			e.Progress.Speed = batch.speedRaw
 		}
 	}
 
@@ -576,19 +608,52 @@ func (e *Encoder) applyProgressBatch(batch progressUpdate) {
 
 // calculatePercentageLocked computes progress percentage (must hold mutex)
 func (e *Encoder) calculatePercentageLocked() {
-	// Prefer frame-based calculation
+	var framePct, timePct float64
+	hasFramePct := false
+	hasTimePct := false
+
+	// Calculate frame-based percentage
 	if e.Progress.TotalFrames > 0 && e.Progress.Frame > 0 {
-		e.Progress.Percentage = clampPercentage(float64(e.Progress.Frame) / float64(e.Progress.TotalFrames) * 100)
-		return
+		framePct = float64(e.Progress.Frame) / float64(e.Progress.TotalFrames) * 100
+		hasFramePct = true
 	}
 
-	// Fallback to time-based calculation
+	// Calculate time-based percentage
 	if e.Progress.TotalDuration > 0 && e.Progress.OutTimeUs > 0 {
 		totalUs := e.Progress.TotalDuration.Microseconds()
 		if totalUs > 0 {
-			e.Progress.Percentage = clampPercentage(float64(e.Progress.OutTimeUs) / float64(totalUs) * 100)
-			return
+			timePct = float64(e.Progress.OutTimeUs) / float64(totalUs) * 100
+			hasTimePct = true
 		}
+	}
+
+	// Determine which percentage to use
+	if hasFramePct && hasTimePct {
+		// Cross-validate: if they differ significantly, time-based is usually more reliable
+		// because duration from container is more accurate than frame count estimates
+		diff := framePct - timePct
+		if diff < 0 {
+			diff = -diff
+		}
+
+		// If frame-based is more than 10% off from time-based, prefer time-based
+		// Also prefer time-based if frame count was estimated (less reliable)
+		if diff > 10 || e.Progress.FrameEstimated {
+			e.Progress.Percentage = clampPercentage(timePct)
+		} else {
+			e.Progress.Percentage = clampPercentage(framePct)
+		}
+		return
+	}
+
+	// Use whichever is available
+	if hasTimePct {
+		e.Progress.Percentage = clampPercentage(timePct)
+		return
+	}
+	if hasFramePct {
+		e.Progress.Percentage = clampPercentage(framePct)
+		return
 	}
 
 	// Cannot calculate
@@ -597,76 +662,83 @@ func (e *Encoder) calculatePercentageLocked() {
 
 // calculateETALocked computes ETA (must hold mutex)
 func (e *Encoder) calculateETALocked() {
-	// Check warmup period (first 3 seconds) - SVT-AV1 needs time to stabilize
-	if !e.Progress.StartTime.IsZero() && time.Since(e.Progress.StartTime) < 3*time.Second {
+	// Check warmup period (first 5 seconds) - SVT-AV1 needs time to stabilize
+	// Values during warmup are unreliable and cause erratic ETA jumps
+	if !e.Progress.StartTime.IsZero() && time.Since(e.Progress.StartTime) < 5*time.Second {
 		e.Progress.ETAAvailable = false
 		e.Progress.ETA = -1
 		return
 	}
 
-	// Method 1: Time-based with speed multiplier (most accurate for SVT-AV1)
+	var newETA time.Duration
+	etaCalculated := false
+
+	// Method 1: Time-based with speed multiplier (most accurate and reliable)
+	// Speed multiplier from FFmpeg directly tells us real-time vs media-time ratio
 	if e.Progress.LastValidSpeed > 0 && e.Progress.TotalDuration > 0 && e.Progress.OutTimeUs > 0 {
 		totalUs := e.Progress.TotalDuration.Microseconds()
 		remainingUs := totalUs - e.Progress.OutTimeUs
 		if remainingUs > 0 {
 			// ETA = remaining_media_time / speed_multiplier
 			etaUs := float64(remainingUs) / e.Progress.LastValidSpeed
-			newETA := time.Duration(int64(etaUs)) * time.Microsecond
-
-			// Apply smoothing
-			if e.Progress.ETAAvailable && e.Progress.ETA > 0 {
-				oldETA := e.Progress.ETA
-				e.Progress.ETA = time.Duration(float64(newETA)*0.6 + float64(oldETA)*0.4)
-			} else {
-				e.Progress.ETA = newETA
-			}
-			e.Progress.ETAAvailable = true
-			return
+			newETA = time.Duration(int64(etaUs)) * time.Microsecond
+			etaCalculated = true
 		}
 	}
 
-	// Method 2: Frame-based with encoding FPS
-	fps := e.Progress.LastValidFPS
-	if fps > 0 && e.Progress.TotalFrames > 0 && e.Progress.Frame > 0 {
-		remainingFrames := e.Progress.TotalFrames - e.Progress.Frame
-		if remainingFrames > 0 {
-			etaSeconds := float64(remainingFrames) / fps
-			newETA := time.Duration(etaSeconds * float64(time.Second))
-
-			// Apply smoothing
-			if e.Progress.ETAAvailable && e.Progress.ETA > 0 {
-				oldETA := e.Progress.ETA
-				e.Progress.ETA = time.Duration(float64(newETA)*0.6 + float64(oldETA)*0.4)
-			} else {
-				e.Progress.ETA = newETA
+	// Method 2: Frame-based with encoding FPS (only if time-based not available)
+	// Skip if frame count is estimated - it's unreliable
+	if !etaCalculated && !e.Progress.FrameEstimated {
+		fps := e.Progress.LastValidFPS
+		if fps > 0 && e.Progress.TotalFrames > 0 && e.Progress.Frame > 0 {
+			remainingFrames := e.Progress.TotalFrames - e.Progress.Frame
+			if remainingFrames > 0 {
+				etaSeconds := float64(remainingFrames) / fps
+				newETA = time.Duration(etaSeconds * float64(time.Second))
+				etaCalculated = true
 			}
-			e.Progress.ETAAvailable = true
-			return
 		}
 	}
 
-	// Method 3: Elapsed time extrapolation
-	if e.Progress.Percentage > 0 && !e.Progress.StartTime.IsZero() {
+	// Method 3: Elapsed time extrapolation (fallback)
+	// Only use after some progress has been made for stability
+	if !etaCalculated && e.Progress.Percentage > 2 && !e.Progress.StartTime.IsZero() {
 		elapsed := time.Since(e.Progress.StartTime)
-		if elapsed > 5*time.Second && e.Progress.Percentage > 1 {
+		if elapsed > 10*time.Second {
 			// ETA = elapsed * (100 - pct) / pct
 			remainingPct := 100 - e.Progress.Percentage
-			newETA := time.Duration(float64(elapsed) * remainingPct / e.Progress.Percentage)
-
-			if e.Progress.ETAAvailable && e.Progress.ETA > 0 {
-				oldETA := e.Progress.ETA
-				e.Progress.ETA = time.Duration(float64(newETA)*0.6 + float64(oldETA)*0.4)
-			} else {
-				e.Progress.ETA = newETA
+			if remainingPct > 0 {
+				newETA = time.Duration(float64(elapsed) * remainingPct / e.Progress.Percentage)
+				etaCalculated = true
 			}
-			e.Progress.ETAAvailable = true
-			return
 		}
 	}
 
-	// Cannot calculate ETA
-	e.Progress.ETAAvailable = false
-	e.Progress.ETA = -1
+	if !etaCalculated {
+		e.Progress.ETAAvailable = false
+		e.Progress.ETA = -1
+		return
+	}
+
+	// Apply smoothing to prevent erratic jumps
+	// Use heavier smoothing (70% old, 30% new) for more stable display
+	if e.Progress.ETAAvailable && e.Progress.ETA > 0 {
+		oldETA := e.Progress.ETA
+		// Clamp extreme changes - if new ETA differs by more than 50%, apply extra dampening
+		diff := float64(newETA - oldETA)
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff > float64(oldETA)*0.5 {
+			// Large jump - apply heavier smoothing
+			e.Progress.ETA = time.Duration(float64(newETA)*0.2 + float64(oldETA)*0.8)
+		} else {
+			e.Progress.ETA = time.Duration(float64(newETA)*0.3 + float64(oldETA)*0.7)
+		}
+	} else {
+		e.Progress.ETA = newETA
+	}
+	e.Progress.ETAAvailable = true
 }
 
 // captureStderr captures FFmpeg stderr output for logs and duration parsing
