@@ -1,0 +1,217 @@
+{
+  "_id": "HANDBRAKE_AV1_CPU_CUSTOM_V12_NO_CROP_NO_SIZE_LIMIT",
+  "name": "Full Suite: AV1 CPU Custom V12 (CRF 20 + VarBoost) - 80% LIMIT - NO CROP - NO SIZE LIMIT",
+  "description": "Full Suite: AV1 CPU Custom V12 - NO CROP for IMAX - NO SIZE LIMIT",
+  "tags": "",
+  "flowPlugins": [
+    {
+      "name": "Input File",
+      "sourceRepo": "Community",
+      "pluginName": "inputFile",
+      "version": "1.0.0",
+      "inputsDB": {
+        "fileAccessChecks": "false",
+        "pauseNodeIfAccessChecksFail": "false"
+      },
+      "fpEnabled": true,
+      "id": "step1",
+      "position": {
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "name": "Check File Extension",
+      "sourceRepo": "Community",
+      "pluginName": "checkFileExtension",
+      "version": "1.0.0",
+      "inputsDB": {
+        "extensions": "mkv,mp4,mov,m4v,ts"
+      },
+      "fpEnabled": true,
+      "id": "step2",
+      "position": {
+        "x": 200,
+        "y": 0
+      }
+    },
+    {
+      "name": "Check Video Codec (Skip AV1)",
+      "sourceRepo": "Community",
+      "pluginName": "checkVideoCodec",
+      "version": "1.0.0",
+      "inputsDB": {
+        "codec": "av1"
+      },
+      "fpEnabled": true,
+      "id": "step4",
+      "position": {
+        "x": 600,
+        "y": 0
+      }
+    },
+    {
+      "name": "FFmpeg Start (For Cleanup)",
+      "sourceRepo": "Community",
+      "pluginName": "ffmpegCommandStart",
+      "version": "1.0.0",
+      "inputsDB": {},
+      "fpEnabled": true,
+      "id": "step5",
+      "position": {
+        "x": 800,
+        "y": 0
+      }
+    },
+    {
+      "name": "Remove RU Streams",
+      "sourceRepo": "Community",
+      "pluginName": "ffmpegCommandRemoveStreamByProperty",
+      "version": "1.0.0",
+      "inputsDB": {
+        "propertyToCheck": "tags.language",
+        "valuesToRemove": "ru,rus,ru-RU,ru_ru,ru_RU",
+        "condition": "includes"
+      },
+      "fpEnabled": true,
+      "id": "step6",
+      "position": {
+        "x": 1000,
+        "y": 0
+      }
+    },
+    {
+      "name": "Remove Picture Streams",
+      "sourceRepo": "Community",
+      "pluginName": "ffmpegCommandRemoveStreamByProperty",
+      "version": "1.0.0",
+      "inputsDB": {
+        "propertyToCheck": "codec_name",
+        "valuesToRemove": "mjpeg,png",
+        "condition": "includes"
+      },
+      "fpEnabled": true,
+      "id": "step7",
+      "position": {
+        "x": 1200,
+        "y": 0
+      }
+    },
+    {
+      "name": "Execute Cleanup",
+      "sourceRepo": "Community",
+      "pluginName": "ffmpegCommandExecute",
+      "version": "1.0.0",
+      "inputsDB": {},
+      "fpEnabled": true,
+      "id": "step8",
+      "position": {
+        "x": 1400,
+        "y": 0
+      }
+    },
+    {
+      "name": "HandBrake (CPU: V12 Custom Params)",
+      "sourceRepo": "Community",
+      "pluginName": "runClassicTranscodePlugin",
+      "version": "1.0.0",
+      "inputsDB": {
+        "pluginSourceId": "Community:Tdarr_Plugin_00td_action_handbrake_ffmpeg_custom",
+        "cli": "handbrake",
+        "arguments": "-f mkv -e svt_av1 -q 20 --encoder-preset 3 --encoder-profile main-10 --crop-mode none --all-audio --aencoder copy --all-subtitles --encopts film-grain=8:enable-variance-boost=1:tune=0",
+        "container": "mkv"
+      },
+      "fpEnabled": true,
+      "id": "step9",
+      "position": {
+        "x": 1600,
+        "y": 0
+      }
+    },
+    {
+      "name": "Final Size Check (<=80%)",
+      "sourceRepo": "Community",
+      "pluginName": "runClassicTranscodePlugin",
+      "version": "1.0.0",
+      "inputsDB": {
+        "pluginSourceId": "Community:Tdarr_Plugin_a9he_New_file_size_check",
+        "upperBound": "80",
+        "lowerBound": "0"
+      },
+      "fpEnabled": true,
+      "id": "step10_SizeCheck",
+      "position": {
+        "x": 1800,
+        "y": 0
+      }
+    },
+    {
+      "name": "Move To Original Directory",
+      "sourceRepo": "Community",
+      "pluginName": "moveToOriginalDirectory",
+      "version": "1.0.0",
+      "fpEnabled": true,
+      "id": "8bEvmMDnm",
+      "position": {
+        "x": 2000,
+        "y": 84
+      }
+    }
+  ],
+  "flowEdges": [
+    {
+      "source": "step1",
+      "sourceHandle": "1",
+      "target": "step2",
+      "id": "e1"
+    },
+    {
+      "source": "step2",
+      "sourceHandle": "1",
+      "target": "step4",
+      "id": "e2_direct_to_step4"
+    },
+    {
+      "source": "step4",
+      "sourceHandle": "2",
+      "target": "step5",
+      "id": "e4"
+    },
+    {
+      "source": "step5",
+      "sourceHandle": "1",
+      "target": "step6",
+      "id": "e5"
+    },
+    {
+      "source": "step6",
+      "sourceHandle": "1",
+      "target": "step7",
+      "id": "e6"
+    },
+    {
+      "source": "step7",
+      "sourceHandle": "1",
+      "target": "step8",
+      "id": "e7"
+    },
+    {
+      "source": "step8",
+      "sourceHandle": "1",
+      "target": "step9",
+      "id": "e8"
+    },
+    {
+      "source": "step9",
+      "sourceHandle": "1",
+      "target": "step10_SizeCheck",
+      "id": "e9_to_check"
+    },
+    {
+      "source": "step10_SizeCheck",
+      "sourceHandle": "1",
+      "target": "8bEvmMDnm",
+      "id": "e10_to_move"
+    }
+  ]
+}
