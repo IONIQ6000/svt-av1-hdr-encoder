@@ -1,2 +1,19 @@
-MAGA Kills and Lies! Disagree？ Call Matt Dillahunty & Jovan Bradley ｜ The Hang Up 01.28.26 \[S4J7NNDGLGg].av1.mkv
-MAGA Kills and Lies! Disagree？ Call Matt Dillahunty & Jovan Bradley ｜ The Hang Up 01.28.26 \[S4J7NNDGLGg].mp4
+# Video files
+*.mkv
+*.mp4
+*.webm
+*.avi
+*.mov
+*.wmv
+*.flv
+*.m4v
+*.ts
+*.mts
+*.m2ts
+*.vob
+*.y4m
+
+# Build artifacts
+svt-av1-encoder/svt-av1-hdr-encoder
+svt-av1-encoder/svt-av1-encoder
+*.log

@@ -9,11 +9,12 @@ const (
 	ProfilePodcast  Profile = "podcast"  // Optimized for talking heads (CRF 40)
 	ProfileCompress Profile = "compress" // Maximum compression (CRF 45)
 	ProfileFilm     Profile = "film"     // For movies/cinema (CRF 32, film grain)
+	ProfileExtreme  Profile = "extreme"  // Extreme compression - smallest possible files
 )
 
 // AvailableProfiles returns all available profile names
 func AvailableProfiles() []Profile {
-	return []Profile{ProfileDefault, ProfileQuality, ProfilePodcast, ProfileCompress, ProfileFilm}
+	return []Profile{ProfileDefault, ProfileQuality, ProfilePodcast, ProfileCompress, ProfileExtreme, ProfileFilm}
 }
 
 // Config holds the encoder configuration settings
@@ -109,6 +110,18 @@ func GetProfile(profile Profile) Config {
 		base.VarianceBoostStrength = 1
 		base.Sharpness = 0
 
+	case ProfileExtreme:
+		// EXTREME compression - smallest possible files, significant quality loss
+		// Use this when file size matters more than quality
+		base.CRF = 55              // Very high CRF for aggressive compression
+		base.Preset = 5            // Balanced speed (preset 2 is unusably slow for long videos)
+		base.Tune = 1              // PSNR tuning (SSIM is experimental only)
+		base.VarianceBoost = false // Disable to save bits
+		base.VarianceBoostStrength = 1 // Must be 1-4 even when disabled
+		base.Sharpness = 0         // No sharpness processing
+		base.TFStrength = 2        // More temporal filtering (reduces noise/detail)
+		base.FilmGrain = 10        // Denoise to reduce detail that costs bits
+
 	case ProfileFilm:
 		// For movies and cinematic content
 		base.CRF = 32
@@ -135,6 +148,8 @@ func ProfileDescription(profile Profile) string {
 		return "Podcast/Talking heads (CRF 40) - Optimized compression for low-motion content"
 	case ProfileCompress:
 		return "Maximum compression (CRF 45) - Smallest files, some quality loss"
+	case ProfileExtreme:
+		return "EXTREME compression (CRF 55) - Tiny files, significant quality loss"
 	case ProfileFilm:
 		return "Film/Cinema (CRF 32) - Preserves film grain, high quality"
 	default:

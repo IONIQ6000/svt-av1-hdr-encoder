@@ -14,7 +14,7 @@ import (
 
 func main() {
 	// Define flags
-	profileFlag := flag.String("profile", "default", "Encoding profile: default, quality, podcast, compress, film")
+	profileFlag := flag.String("profile", "default", "Encoding profile: default, quality, podcast, compress, extreme, film")
 	listProfiles := flag.Bool("list-profiles", false, "List all available profiles and exit")
 
 	// Custom usage
@@ -79,7 +79,7 @@ func main() {
 	}
 	if !validProfile {
 		fmt.Fprintf(os.Stderr, "Error: Unknown profile '%s'\n", *profileFlag)
-		fmt.Fprintf(os.Stderr, "Available profiles: default, quality, podcast, compress, film\n")
+		fmt.Fprintf(os.Stderr, "Available profiles: default, quality, podcast, compress, extreme, film\n")
 		os.Exit(1)
 	}
 
